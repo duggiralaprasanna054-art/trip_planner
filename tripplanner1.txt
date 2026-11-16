@@ -1,0 +1,601 @@
+package com.tripplanner.util;
+
+import java.io.InputStream;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.util.Properties;
+
+public class DBConnection {
+    private static String url;
+    private static String username;
+    private static String password;
+
+    static {
+        try {
+            Properties properties = new Properties();
+            InputStream input = DBConnection.class
+                    .getClassLoader()
+                    .getResourceAsStream("db.properties");
+            if (input == null) {
+                throw new RuntimeException("db.properties file not found");
+            }
+            properties.load(input);
+            url = properties.getProperty("db.url");
+            username = properties.getProperty("db.username");
+            password = properties.getProperty("db.password");
+            
+            Class.forName("oracle.jdbc.driver.OracleDriver");
+            input.close();
+        } catch (Exception e) {
+            throw new RuntimeException("Database configuration error", e);
+        }
+    }
+
+    public static Connection getConnection() {
+        try {
+            return DriverManager.getConnection(url, username, password);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+}
+package com.tripplanner.filter;
+
+import java.io.IOException;
+import javax.servlet.Filter;
+import javax.servlet.FilterChain;
+import javax.servlet.ServletException;
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
+import javax.servlet.annotation.WebFilter;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
+
+@WebFilter("/*")
+public class AuthenticationFilter implements Filter {
+    @Override
+    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+            throws IOException, ServletException {
+        HttpServletRequest req = (HttpServletRequest) request;
+        HttpServletResponse res = (HttpServletResponse) response;
+
+        // Prevent browser from caching pages
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        res.setHeader("Pragma", "no-cache");
+        res.setDateHeader("Expires", 0);
+
+        HttpSession session = req.getSession(false);
+        String path = req.getRequestURI().substring(req.getContextPath().length());
+        boolean loggedIn = session != null && session.getAttribute("loggedUser") != null;
+
+        // Pages/resources that can be accessed without login
+        boolean publicRequest = path.equals("/")
+                || path.equals("/login.html")
+                || path.equals("/register.html")
+                || path.equals("/login")
+                || path.equals("/register")
+                || path.startsWith("/css/")
+                || path.startsWith("/js/")
+                || path.startsWith("/images/");
+
+        if (loggedIn || publicRequest) {
+            chain.doFilter(request, response);
+        } else {
+            res.sendRedirect(req.getContextPath() + "/login.html");
+        }
+    }
+}
+package com.tripplanner.controller;
+
+import java.io.IOException;
+import com.tripplanner.dao.UserDAO;
+import com.tripplanner.model.User;
+import javax.servlet.ServletException;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
+
+@WebServlet("/login")
+public class LoginServlet extends HttpServlet {
+    private static final long serialVersionUID = 1L;
+
+    protected void doPost(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+        String email = request.getParameter("email");
+        String password = request.getParameter("password");
+
+        if (email == null || email.trim().isEmpty() || password == null || password.isEmpty()) {
+            response.sendRedirect("login.html?error=empty");
+            return;
+        }
+
+        UserDAO userDAO = new UserDAO();
+        User user = userDAO.login(email.trim(), password);
+
+        if (user != null) {
+            HttpSession session = request.getSession();
+            session.setMaxInactiveInterval(30 * 60);
+            session.setAttribute("loggedUser", user);
+            response.sendRedirect("dashboard.jsp");
+        } else {
+            response.sendRedirect("login.html?error=invalid");
+        }
+    }
+}
+package com.tripplanner.controller;
+
+import java.io.IOException;
+import java.util.regex.Pattern;
+import com.tripplanner.dao.UserDAO;
+import com.tripplanner.model.User;
+import javax.servlet.ServletException;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+@WebServlet("/register")
+public class RegisterServlet extends HttpServlet {
+    private static final long serialVersionUID = 1L;
+    private static final Pattern NAME_PATTERN = Pattern.compile("^[A-Za-z ]{3,50}$");
+    private static final Pattern EMAIL_PATTERN = Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
+    private static final Pattern PHONE_PATTERN = Pattern.compile("^[6-9][0-9]{9}$");
+    
+    private static final Pattern PASSWORD_PATTERN = Pattern.compile(
+        "^(?=.*[a-z])" +
+        "(?=.*[A-Z])" +
+        "(?=.*\\d)" +
+        "(?=.*[^A-Za-z0-9\\s])" +
+        ".{8,50}$"
+    );
+
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+        String name = request.getParameter("name");
+        String email = request.getParameter("email");
+        String phone = request.getParameter("phone");
+        String password = request.getParameter("password");
+        String confirmPassword = request.getParameter("confirmPassword");
+
+        if (name == null || email == null || phone == null || password == null || confirmPassword == null ||
+            name.trim().isEmpty() || email.trim().isEmpty() || phone.trim().isEmpty() || password.isEmpty() || confirmPassword.isEmpty()) {
+            response.sendRedirect("register.html?error=invalid");
+            return;
+        }
+
+        name = name.trim();
+        email = email.trim().toLowerCase();
+        phone = phone.trim();
+
+        if (!NAME_PATTERN.matcher(name).matches()) {
+            response.sendRedirect("register.html?error=name");
+            return;
+        }
+        if (!EMAIL_PATTERN.matcher(email).matches()) {
+            response.sendRedirect("register.html?error=emailformat");
+            return;
+        }
+        if (!PHONE_PATTERN.matcher(phone).matches()) {
+            response.sendRedirect("register.html?error=phone");
+            return;
+        }
+        if (!PASSWORD_PATTERN.matcher(password).matches()) {
+            response.sendRedirect("register.html?error=passwordrules");
+            return;
+        }
+        if (!password.equals(confirmPassword)) {
+            response.sendRedirect("register.html?error=password");
+            return;
+        }
+
+        UserDAO userDAO = new UserDAO();
+        if (userDAO.emailExists(email)) {
+            response.sendRedirect("register.html?error=email");
+            return;
+        }
+
+        User user = new User(name, email, password, phone);
+        boolean registered = userDAO.registerUser(user);
+
+        if (registered) {
+            response.sendRedirect("login.html?registered=true");
+        } else {
+            response.sendRedirect("register.html?error=server");
+        }
+    }
+}
+package com.tripplanner.controller;
+
+import java.io.IOException;
+import java.sql.Date;
+import java.time.LocalDate;
+import java.util.UUID;
+import com.tripplanner.dao.TripDAO;
+import com.tripplanner.dao.TripMemberDAO;
+import com.tripplanner.model.Trip;
+import com.tripplanner.model.User;
+import javax.servlet.ServletException;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.*;
+
+@WebServlet("/createTrip")
+public class CreateTripServlet extends HttpServlet {
+    private static final long serialVersionUID = 1L;
+
+    protected void doPost(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+        HttpSession session = request.getSession(false);
+        if (session == null || session.getAttribute("loggedUser") == null) {
+            response.sendRedirect("login.html");
+            return;
+        }
+
+        try {
+            User user = (User) session.getAttribute("loggedUser");
+            String tripName = request.getParameter("tripName").trim();
+            String startCity = request.getParameter("startCity").trim();
+            LocalDate start = LocalDate.parse(request.getParameter("startDate"));
+            LocalDate end = LocalDate.parse(request.getParameter("endDate"));
+            double budget = Double.parseDouble(request.getParameter("budget"));
+
+            if (tripName.isEmpty() || startCity.isEmpty() || budget <= 0 || end.isBefore(start)) {
+                response.sendRedirect("createTrip.jsp?error=invalid");
+                return;
+            }
+
+            Trip trip = new Trip();
+            trip.setTripName(tripName);
+            trip.setCreatedBy(user.getUserId());
+            trip.setStartCity(startCity);
+            trip.setStartDate(Date.valueOf(start));
+            trip.setEndDate(Date.valueOf(end));
+            trip.setTotalBudget(budget);
+            trip.setStatus(calculateStatus(start, end));
+
+            String inviteCode = UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+            trip.setInviteCode(inviteCode);
+
+            TripDAO dao = new TripDAO();
+            if (dao.createTrip(trip)) {
+                TripMemberDAO memberDAO = new TripMemberDAO();
+                memberDAO.addOrganizerByInviteCode(inviteCode, user.getUserId());
+                response.sendRedirect("myTrips.jsp?created=true");
+            } else {
+                response.sendRedirect("createTrip.jsp?error=server");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.sendRedirect("createTrip.jsp?error=invalid");
+        }
+    }
+
+    private String calculateStatus(LocalDate start, LocalDate end) {
+        LocalDate today = LocalDate.now();
+        if (today.isBefore(start)) {
+            return "UPCOMING";
+        }
+        if (today.isAfter(end)) {
+            return "COMPLETED";
+        }
+        return "ONGOING";
+    }
+}
+package com.tripplanner.controller;
+
+import java.io.IOException;
+import com.tripplanner.dao.TripDAO;
+import com.tripplanner.model.Trip;
+import com.tripplanner.model.User;
+import javax.servlet.ServletException;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.*;
+
+@WebServlet("/joinTrip")
+public class JoinTripServlet extends HttpServlet {
+    private static final long serialVersionUID = 1L;
+
+    protected void doPost(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+        HttpSession session = request.getSession(false);
+        if (session == null || session.getAttribute("loggedUser") == null) {
+            response.sendRedirect("login.html");
+            return;
+        }
+
+        User user = (User) session.getAttribute("loggedUser");
+        String inviteCode = request.getParameter("inviteCode");
+
+        if (inviteCode == null || inviteCode.trim().isEmpty()) {
+            response.sendRedirect("joinTrip.jsp?error=invalid");
+            return;
+        }
+
+        TripDAO dao = new TripDAO();
+        Trip trip = dao.getTripByInviteCode(inviteCode.trim());
+
+        if (trip == null) {
+            response.sendRedirect("joinTrip.jsp?error=invalid");
+            return;
+        }
+        if (trip.getCreatedBy() == user.getUserId()) {
+            response.sendRedirect("joinTrip.jsp?error=own");
+            return;
+        }
+        if (dao.isTripMember(trip.getTripId(), user.getUserId())) {
+            response.sendRedirect("joinTrip.jsp?error=already");
+            return;
+        }
+
+        boolean joined = dao.joinTrip(trip.getTripId(), user.getUserId());
+        if (joined) {
+            response.sendRedirect("myTrips.jsp?joined=true");
+        } else {
+            response.sendRedirect("joinTrip.jsp?error=server");
+        }
+    }
+}
+package com.tripplanner.controller;
+
+import java.io.IOException;
+import java.sql.Date;
+import java.time.LocalTime;
+import com.tripplanner.dao.ItineraryDAO;
+import com.tripplanner.dao.TripDAO;
+import com.tripplanner.model.Itinerary;
+import com.tripplanner.model.Trip;
+import com.tripplanner.model.User;
+import javax.servlet.ServletException;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.*;
+
+@WebServlet("/addActivity")
+public class AddActivityServlet extends HttpServlet {
+    private static final long serialVersionUID = 1L;
+
+    protected void doPost(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+        HttpSession session = request.getSession(false);
+        if (session == null || session.getAttribute("loggedUser") == null) {
+            response.sendRedirect("login.html");
+            return;
+        }
+
+        try {
+            User user = (User) session.getAttribute("loggedUser");
+            int tripId = Integer.parseInt(request.getParameter("tripId"));
+            String activityName = request.getParameter("activityName");
+            String dateText = request.getParameter("activityDate");
+            String startTime = request.getParameter("startTime");
+            String endTime = request.getParameter("endTime");
+            String placeText = request.getParameter("placeId");
+            String costText = request.getParameter("estimatedCost");
+            String notes = request.getParameter("notes");
+
+            TripDAO tripDAO = new TripDAO();
+            Trip trip = tripDAO.getTripById(tripId, user.getUserId());
+            if (trip == null) {
+                response.sendRedirect("myTrips.jsp");
+                return;
+            }
+
+            if (activityName == null || activityName.trim().isEmpty()) {
+                response.sendRedirect("itinerary.jsp?id=" + tripId + "&error=name");
+                return;
+            }
+
+            Date activityDate = Date.valueOf(dateText);
+            if (activityDate.before(trip.getStartDate()) || activityDate.after(trip.getEndDate())) {
+                response.sendRedirect("itinerary.jsp?id=" + tripId + "&error=date");
+                return;
+            }
+
+            LocalTime start = LocalTime.parse(startTime);
+            LocalTime end = LocalTime.parse(endTime);
+            if (!end.isAfter(start)) {
+                response.sendRedirect("itinerary.jsp?id=" + tripId + "&error=time");
+                return;
+            }
+
+            int placeId = (placeText != null && !placeText.trim().isEmpty()) ? Integer.parseInt(placeText) : 0;
+            double estimatedCost = (costText != null && !costText.trim().isEmpty()) ? Double.parseDouble(costText) : 0;
+
+            if (estimatedCost < 0) {
+                response.sendRedirect("itinerary.jsp?id=" + tripId + "&error=cost");
+                return;
+            }
+
+            ItineraryDAO itineraryDAO = new ItineraryDAO();
+            if (itineraryDAO.hasConflict(tripId, activityDate, startTime, endTime)) {
+                response.sendRedirect("itinerary.jsp?id=" + tripId + "&error=conflict");
+                return;
+            }
+
+            Itinerary item = new Itinerary();
+            item.setTripId(tripId);
+            item.setPlaceId(placeId);
+            item.setActivityName(activityName.trim());
+            item.setActivityDate(activityDate);
+            item.setStartTime(startTime);
+            item.setEndTime(endTime);
+            item.setEstimatedCost(estimatedCost);
+            item.setNotes(notes);
+
+            boolean added = itineraryDAO.addActivity(item);
+            if (added) {
+                response.sendRedirect("itinerary.jsp?id=" + tripId + "&added=true");
+            } else {
+                response.sendRedirect("itinerary.jsp?id=" + tripId + "&error=save");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.sendRedirect("myTrips.jsp");
+        }
+    }
+}
+package com.tripplanner.controller;
+
+import java.io.IOException;
+import java.sql.Date;
+import com.tripplanner.dao.ExpenseDAO;
+import com.tripplanner.dao.TripDAO;
+import com.tripplanner.dao.TripMemberDAO;
+import com.tripplanner.model.Expense;
+import com.tripplanner.model.Trip;
+import com.tripplanner.model.User;
+import javax.servlet.ServletException;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.*;
+
+@WebServlet("/addExpense")
+public class AddExpenseServlet extends HttpServlet {
+    private static final long serialVersionUID = 1L;
+
+    protected void doPost(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+        HttpSession session = request.getSession(false);
+        if (session == null || session.getAttribute("loggedUser") == null) {
+            response.sendRedirect("login.html");
+            return;
+        }
+
+        try {
+            User user = (User) session.getAttribute("loggedUser");
+            int tripId = Integer.parseInt(request.getParameter("tripId"));
+            int paidBy = Integer.parseInt(request.getParameter("paidBy"));
+            String category = request.getParameter("category");
+            String description = request.getParameter("description");
+            double amount = Double.parseDouble(request.getParameter("amount"));
+            Date expenseDate = Date.valueOf(request.getParameter("expenseDate"));
+
+            TripDAO tripDAO = new TripDAO();
+            Trip trip = tripDAO.getAccessibleTripById(tripId, user.getUserId());
+            if (trip == null) {
+                response.sendRedirect("myTrips.jsp");
+                return;
+            }
+
+            if (description == null || description.trim().isEmpty() || category == null || category.trim().isEmpty()) {
+                response.sendRedirect("expenses.jsp?id=" + tripId + "&error=input");
+                return;
+            }
+            if (amount <= 0) {
+                response.sendRedirect("expenses.jsp?id=" + tripId + "&error=amount");
+                return;
+            }
+            if (expenseDate.before(trip.getStartDate()) || expenseDate.after(trip.getEndDate())) {
+                response.sendRedirect("expenses.jsp?id=" + tripId + "&error=date");
+                return;
+            }
+
+            TripMemberDAO memberDAO = new TripMemberDAO();
+            if (!memberDAO.isMember(tripId, paidBy)) {
+                response.sendRedirect("expenses.jsp?id=" + tripId + "&error=member");
+                return;
+            }
+
+            Expense expense = new Expense();
+            expense.setTripId(tripId);
+            expense.setPaidBy(paidBy);
+            expense.setCategory(category);
+            expense.setDescription(description.trim());
+            expense.setAmount(amount);
+            expense.setExpenseDate(expenseDate);
+
+            ExpenseDAO dao = new ExpenseDAO();
+            if (dao.addExpense(expense)) {
+                response.sendRedirect("expenses.jsp?id=" + tripId + "&added=true");
+            } else {
+                response.sendRedirect("expenses.jsp?id=" + tripId + "&error=save");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.sendRedirect("myTrips.jsp");
+        }
+    }
+}
+package com.tripplanner.dao;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import com.tripplanner.model.User;
+import com.tripplanner.util.DBConnection;
+
+public class UserDAO {
+    private String hashPassword(String password) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] hash = digest.digest(password.getBytes(StandardCharsets.UTF_8));
+        StringBuilder result = new StringBuilder();
+        for (byte b : hash) {
+            result.append(String.format("%02x", b));
+        }
+        return result.toString();
+    }
+
+    public boolean emailExists(String email) {
+        String sql = "SELECT USER_ID FROM USERS WHERE LOWER(EMAIL) = LOWER(?)";
+        try (Connection con = DBConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(sql)) {
+            ps.setString(1, email);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return false;
+    }
+
+    public boolean registerUser(User user) {
+        String sql = "INSERT INTO USERS (USER_ID, NAME, EMAIL, PASSWORD_HASH, PHONE) " +
+                     "VALUES (USERS_SEQ.NEXTVAL, ?, ?, ?, ?)";
+        try (Connection con = DBConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(sql)) {
+            ps.setString(1, user.getName());
+            ps.setString(2, user.getEmail());
+            ps.setString(3, hashPassword(user.getPassword()));
+            ps.setString(4, user.getPhone());
+            return ps.executeUpdate() > 0;
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return false;
+    }
+
+    public User login(String email, String password) {
+        String sql = "SELECT USER_ID, NAME, EMAIL, PHONE FROM USERS " +
+                     "WHERE LOWER(EMAIL) = LOWER(?) AND PASSWORD_HASH = ?";
+        try (Connection con = DBConnection.getConnection();
+             PreparedStatement ps = con.prepareStatement(sql)) {
+            ps.setString(1, email);
+            ps.setString(2, hashPassword(password));
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    User user = new User();
+                    user.setUserId(rs.getInt("USER_ID"));
+                    user.setName(rs.getString("NAME"));
+                    user.setEmail(rs.getString("EMAIL"));
+                    user.setPhone(rs.getString("PHONE"));
+                    return user;
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+}
+<%
+    double totalSpent = expenseDAO.getTotalSpent(tripId);
+    int memberCount = (members == null || members.isEmpty()) ? 1 : members.size();
+    double equalShare = totalSpent / memberCount;
+    double remainingBudget = trip.getTotalBudget() - totalSpent;
+    Map<Integer, Double> paidAmounts = expenseDAO.getPaidAmounts(tripId);
+%>
